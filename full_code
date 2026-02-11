@@ -1,0 +1,1041 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+import statsmodels.api as sm
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.mixture import GaussianMixture
+from sklearn.model_selection import train_test_split, cross_validate, cross_val_score, cross_val_predict
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.svm import SVR
+from sklearn.metrics import mean_squared_error, r2_score, make_scorer
+from scipy import stats
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import regularizers
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
+
+from IPython.display import display, HTML
+import io
+import base64
+
+sns.set_theme(style="whitegrid")
+
+np.random.seed(42)
+
+
+df = pd.read_csv("C:\\Users\\alexl\\Downloads\\train.csv")
+print(df.head())
+
+features = [
+    "RhythmScore", "AudioLoudness", "VocalContent",
+    "AcousticQuality", "InstrumentalScore",
+    "LivePerformanceLikelihood", "MoodScore",
+    "TrackDurationMs", "Energy"
+]
+target = "BeatsPerMinute"
+
+
+print(df[features + [target]].describe())
+
+# Missing values check
+missing_values = df.isnull().sum()
+print("Missing values per column:")
+print(missing_values[missing_values > 0])
+
+# Quick summary statistics (outlier detection)
+print("\nSummary statistics:")
+print(df.describe())
+
+# Outlier detection using IQR
+print("\nPotential outliers (IQR method):")
+for col in features + [target]:
+    Q1 = df[col].quantile(0.25)
+    Q3 = df[col].quantile(0.75)
+    IQR = Q3 - Q1
+    lower = Q1 - 1.5 * IQR
+    upper = Q3 + 1.5 * IQR
+    
+    outliers = ((df[col] < lower) | (df[col] > upper)).sum()
+    print(f"{col}: {outliers} potential outliers")
+
+
+# Distribution features
+df[features].hist(figsize=(14,10), bins=30)
+plt.suptitle("Feature distributions")
+plt.show()
+
+# Distribution target
+sns.histplot(df[target], bins=40, kde=True, color='orange')
+plt.title("BPM distribution")
+plt.show()
+
+# Correlation matrix
+plt.figure(figsize=(10,10))
+sns.heatmap(df[features + [target]].corr(), annot=True, cmap="coolwarm")
+plt.title("Correlation matrix")
+plt.show()
+
+# Scatter plots BPM vs features
+html_str = ""
+
+for f in features:
+    plt.figure(figsize=(2.5,2.5))  
+    sns.scatterplot(x=df[f], y=df[target], alpha=0.5)
+    plt.title(f"BPM vs {f}", fontsize=8)
+    plt.xlabel(f, fontsize=8)
+    plt.ylabel(target, fontsize=8)
+    plt.tight_layout()
+    
+    # We save the figure into a buffer for layout purpose
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    buf.close()
+    plt.close()
+    html_str += f'<img src="data:image/png;base64,{img_base64}" style="margin:2px;">'
+
+display(HTML(html_str))
+
+# Boxplots des features
+palette = sns.color_palette("husl", len(features))
+plt.figure(figsize=(25, 18))
+for i, col in enumerate(features, 1):
+    plt.subplot(4, 4, i)
+    sns.boxplot(y=df[col], color=palette[i-1])
+    plt.title(f'Boxplot of {col}')
+plt.tight_layout()
+plt.show()
+
+X = df[features]
+y = df[target]
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X_scaled)
+
+pca_components = pd.DataFrame(
+    pca.components_,      
+    columns=features,     
+    index=['PC1','PC2']
+)
+
+for pc in ['PC1','PC2']:
+    print(f"\nTop features contributing to {pc}:")
+    print(pca_components.loc[pc].sort_values(ascending=False))
+
+# Scatter plot PCA
+plt.figure(figsize=(6,6))
+plt.scatter(X_pca[:,0], X_pca[:,1], alpha=0.5)
+plt.title("PCA projection (2D)")
+plt.xlabel("PC1")
+plt.ylabel("PC2")
+plt.show()
+
+df_plot = pca_components.T
+
+plt.figure(figsize=(8,5))
+df_plot.plot(kind='bar', figsize=(10,5), width=0.8, colormap='viridis')
+plt.title("Feature contributions to PC1 and PC2")
+plt.ylabel("Contribution (weight)")
+plt.xlabel("Feature")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+k = 4
+kmeans = KMeans(n_clusters=k, random_state=42)
+clusters = kmeans.fit_predict(X_scaled)
+df['cluster_kmeans'] = clusters
+
+plt.figure(figsize=(6,6))
+plt.scatter(X_pca[:,0], X_pca[:,1], c=clusters, cmap='tab10', alpha=0.5)
+plt.title("K-means clusters (PCA space)")
+plt.show()
+
+gmm = GaussianMixture(n_components=k, random_state=42)
+gmm_labels = gmm.fit_predict(X_scaled)
+df['cluster_gmm'] = gmm_labels
+
+plt.figure(figsize=(6,6))
+plt.scatter(X_pca[:,0], X_pca[:,1], c=gmm_labels, cmap='tab10', alpha=0.5)
+plt.title("GMM clusters (PCA space)")
+plt.show()
+
+None
+
+print(df.groupby('cluster_kmeans')[features].mean())
+print(df.groupby('cluster_kmeans')['BeatsPerMinute'].describe())
+
+
+
+# Average BPM per cluster
+print("Average BPM per cluster:")
+print(df.groupby('cluster_kmeans')[target].mean())
+
+
+X_df = pd.DataFrame(X, columns=features)
+X_train, X_test, y_train, y_test = train_test_split(X_df, y, test_size=0.2, random_state=42)
+X_train_sm = sm.add_constant(X_train)
+model_1 = sm.OLS(y_train, X_train_sm).fit()
+
+model_1.features_ = features
+
+print(model_1.summary()) 
+
+X_test_sm = sm.add_constant(X_test)
+y_pred_mod1 = model_1.predict(X_test_sm)
+
+# RMSE
+rmse_mod1 = np.sqrt(np.mean((y_test - y_pred_mod1)**2))
+print(f"RMSE : {rmse_mod1:.4f}")
+
+features_mod2 = features
+X_orig_df = pd.DataFrame(X, columns=features_mod2) 
+
+# Select only significant variables
+significant_features = ['RhythmScore','VocalContent','MoodScore','TrackDurationMs']
+X_df = X_orig_df[significant_features]  
+
+X_train, X_test, y_train, y_test = train_test_split(X_df, y, test_size=0.2, random_state=42)
+
+X_train_sm = sm.add_constant(X_train)
+model_2 = sm.OLS(y_train, X_train_sm).fit()
+
+model_2.features_ = significant_features
+
+print("\n Regression with significant variables")
+print(model_2.summary())  
+
+X_test_sm = sm.add_constant(X_test)
+y_pred_mod2 = model_2.predict(X_test_sm)
+
+# RMSE
+rmse_mod2 = np.sqrt(np.mean((y_test - y_pred_mod2)**2))
+print(f"RMSE: {rmse_mod2:.4f}")
+
+base_features = ['RhythmScore', 'VocalContent', 'MoodScore', 'TrackDurationMs', 'Energy', 'AcousticQuality']
+
+X_df = pd.DataFrame(X, columns=features)
+X_fe = X_df[base_features].copy()
+
+# Relevant interactions
+X_fe['Energy_x_Acoustic'] = X_fe['Energy'] * X_fe['AcousticQuality']
+X_fe['Mood_x_Vocal'] = X_fe['MoodScore'] * X_fe['VocalContent']
+
+# Nonlinear terms
+X_fe['Rhythm2'] = X_fe['RhythmScore'] ** 2
+X_fe['Mood2'] = X_fe['MoodScore'] ** 2
+
+# Clustering-related features (non standardised)
+if 'cluster_kmeans' in df.columns:
+    cluster_dummies = pd.get_dummies(df['cluster_kmeans'], prefix='cluster', drop_first=True)
+    X_fe = pd.concat([X_fe, cluster_dummies], axis=1)
+
+if 'dist_to_centroid' in df.columns:
+    X_fe['dist_to_centroid'] = df['dist_to_centroid']
+
+# Standardisation
+cols_to_scale = [
+    'RhythmScore', 'VocalContent', 'MoodScore', 'TrackDurationMs',
+    'Energy', 'AcousticQuality',
+    'Energy_x_Acoustic', 'Mood_x_Vocal',
+    'Rhythm2', 'Mood2'
+]
+
+scaler = StandardScaler()
+X_fe[cols_to_scale] = scaler.fit_transform(X_fe[cols_to_scale])
+
+print("Shape after feature engineering:", X_fe.shape)
+X_fe.head()
+
+X_train, X_test, y_train, y_test = train_test_split(X_fe, y, test_size=0.2, random_state=42)
+
+X_train_sm = sm.add_constant(X_train).astype(float)
+X_test_sm = sm.add_constant(X_test).astype(float)
+model_3 = sm.OLS(y_train, X_train_sm).fit()
+model_3.features_ = X_train.columns.tolist() 
+
+print("\n Linear regression with feature engineering :")
+print(model_3.summary())
+
+X_test_sm = sm.add_constant(X_test)
+
+y_pred_mod3 = model_3.predict(X_test_sm)
+
+# RMSE
+rmse_mod3 = np.sqrt(np.mean((y_test - y_pred_mod3)**2))
+print(f"RMSE : {rmse_mod3:.4f}")
+
+y_pred = model_3.predict(X_test_sm)
+residuals = y_test - y_pred
+
+# Residuals vs Predicted
+plt.figure(figsize=(7,5))
+plt.scatter(y_pred, residuals, alpha=0.3)
+plt.axhline(0, linestyle='--', color='red')
+plt.xlabel('Predicted BeatsPerMinute')
+plt.ylabel('Residuals')
+plt.title('Residuals vs Predicted')
+plt.show()
+
+# Residual histogram
+plt.figure(figsize=(7,5))
+sns.histplot(residuals, kde=True)
+plt.title('Residual Distribution')
+plt.xlabel('Residuals')
+plt.show()
+
+# Q-Q plot of residuals
+residuals = np.array(residuals, dtype=float)  
+residuals = residuals[np.isfinite(residuals)]  
+
+# Q-Q plot
+plt.figure(figsize=(6,6))
+sm.qqplot(residuals, line='45', fit=True)  # line='45' trace la ligne y=x
+plt.title("Q-Q plot of residuals")
+plt.grid(True)
+plt.show()
+
+
+
+# Sorted coefficients 
+print("\nSorted coefficients:")
+print(model_3.params.sort_values())
+
+
+features_to_use = [col for col in X_fe.columns if not col.startswith('cluster')]
+
+clusters = df['cluster_kmeans'].unique()
+y_pred_list = []
+rmse_list = []
+weights = []
+
+for c in clusters:
+    mask = df['cluster_kmeans'] == c
+    X_c = X_fe.loc[mask, features_to_use]
+    y_c = y[mask]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_c, y_c, test_size=0.2, random_state=42
+    )
+
+    X_train_sm = sm.add_constant(X_train).astype(float)
+    X_test_sm = sm.add_constant(X_test).astype(float)
+    model_4 = sm.OLS(y_train, X_train_sm).fit()
+    model_4.features_ = X_train_sm.columns.tolist()
+
+    y_pred_c = model_4.predict(X_test_sm)
+    rmse_c = np.sqrt(mean_squared_error(y_test, y_pred_c))
+
+    y_pred_list.append(y_pred_c)
+    rmse_list.append(rmse_c)
+    weights.append(len(y_test)) 
+
+
+rmse_mod4 = np.sqrt(np.average(np.array(rmse_list)**2, weights=weights))
+print(f"RMSE weighted: {rmse_mod4:.4f}")
+
+y_pred_mod4 = np.concatenate(y_pred_list)
+
+
+# Explanatory features (without cluster columns)
+features_to_use = [col for col in X_fe.columns if not col.startswith('cluster')]
+alphas = [0.01, 0.1, 1.0, 10.0]
+clusters = df['cluster_kmeans'].unique()
+
+# For weighted overall RMSE and predictions
+y_pred_ridge_all = {a: [] for a in alphas}
+y_pred_lasso_all = {a: [] for a in alphas}
+rmse_ridge_all = {a: [] for a in alphas}
+rmse_lasso_all = {a: [] for a in alphas}
+weights_all = []
+
+for c in clusters:
+    print(f"Cluster {c}")
+    
+    mask = df['cluster_kmeans'] == c
+    X_c = X_fe.loc[mask, features_to_use]
+    y_c = y[mask]
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_c, y_c, test_size=0.2, random_state=42
+    )
+    
+    weights_all.append(len(y_test)) 
+    
+    # RIDGE
+    print("\n Ridge Regression")
+    for a in alphas:
+        model_5 = Ridge(alpha=a)
+        model_5.features_ = X_train.columns.tolist()
+
+        model_5.fit(X_train, y_train)
+        y_pred = model_5.predict(X_test)
+        
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        r2 = r2_score(y_test, y_pred)
+        
+        print(f"alpha={a:<5} | RMSE={rmse:.3f} | R²={r2:.4f}")
+        
+        y_pred_ridge_all[a].append(y_pred)
+        rmse_ridge_all[a].append(rmse)
+    
+    # LASSO
+    print("\n Lasso Regression")
+    for a in alphas:
+        model_5 = Lasso(alpha=a, max_iter=5000)
+        model_5.features_ = X_train.columns.tolist()
+        
+        model_5.fit(X_train, y_train)
+        y_pred = model_5.predict(X_test)
+    
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        r2 = r2_score(y_test, y_pred)
+        n_nonzero = np.sum(model_5.coef_ != 0)
+        
+        print(f"alpha={a:<5} | RMSE={rmse:.3f} | R²={r2:.4f} | non-zero={n_nonzero}")
+        
+        y_pred_lasso_all[a].append(y_pred)
+        rmse_lasso_all[a].append(rmse)
+
+# Weighted overall RMSE
+weights_all = np.array(weights_all)
+
+print("\n Cluster-weighted overall RMSE")
+
+print("Ridge:")
+for a in alphas:
+    rmse_global_ridge = np.sqrt(np.average(np.array(rmse_ridge_all[a])**2, weights=weights_all))
+    y_pred_global_ridge = np.concatenate(y_pred_ridge_all[a])
+    
+    print(f"alpha={a:<5} | Weighted overall RMSE = {rmse_global_ridge:.3f}")
+
+print("\nLasso:")
+for a in alphas:
+    rmse_global_lasso = np.sqrt(np.average(np.array(rmse_lasso_all[a])**2, weights=weights_all))
+    y_pred_global_lasso = np.concatenate(y_pred_lasso_all[a])
+    print(f"alpha={a:<5} | Weighted overall RMSE = {rmse_global_lasso:.3f}")
+
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42
+)
+
+model_6 = RandomForestRegressor(
+    n_estimators=150,
+    max_depth=None,
+    min_samples_leaf=5,
+    random_state=42,
+    n_jobs=-1
+)
+
+model_6.features_ = features
+model_6.fit(X_train, y_train)
+
+y_pred_rf = model_6.predict(X_test)
+rmse_rf = np.sqrt(mean_squared_error(y_test, y_pred_rf))
+r2_rf = r2_score(y_test, y_pred_rf)
+
+print("Random Forest:")
+print(f"RMSE : {rmse_rf:.3f}")
+print(f"R²   : {r2_rf:.4f}")
+
+rf_importances = pd.Series(
+    model_6.feature_importances_,
+    index=features   
+).sort_values(ascending=False)
+
+print("\nRandomForest feature importances:")
+print(rf_importances)
+
+model_7 = GradientBoostingRegressor(
+    n_estimators=150,
+    learning_rate=0.05,
+    max_depth=3,
+    subsample=0.8,
+    random_state=42
+)
+
+model_5.features_ = X_train.columns.tolist()
+model_7.fit(X_train, y_train)
+
+y_pred_gb = model_7.predict(X_test)
+
+rmse_gb = np.sqrt(mean_squared_error(y_test, y_pred_gb))
+r2_gb = r2_score(y_test, y_pred_gb)
+
+print("Gradient Boosting")
+print(f"RMSE : {rmse_gb:.3f}")
+print(f"R²   : {r2_gb:.4f}")
+
+# Importances GB
+gb_importances = pd.Series(
+    model_7.feature_importances_,
+    index=features
+).sort_values(ascending=False)
+
+print("\nGradientBoosting feature importances:")
+print(gb_importances)
+
+# We sample 10,000 lines at random for computational time reasons.
+sample_size = 10000
+np.random.seed(42)
+
+indices = np.random.choice(X.shape[0], size=sample_size, replace=False)
+
+X_sample = X.iloc[indices]
+y_sample = y.iloc[indices]
+
+# RMSE scorer
+rmse_scorer = make_scorer(
+    lambda y_true, y_pred: np.sqrt(mean_squared_error(y_true, y_pred)),
+    greater_is_better=False
+)
+
+scoring = {'rmse': rmse_scorer, 'r2': 'r2'}
+
+cv_results = cross_validate(
+    model_6,
+    X_sample, y_sample,
+    cv=5,
+    scoring=scoring,
+    return_train_score=True,
+    n_jobs=-1
+)
+
+test_rmse = -cv_results['test_rmse']
+train_rmse = -cv_results['train_rmse']
+
+print(f"RMSE test  : {test_rmse.mean():.3f} ± {test_rmse.std():.3f}")
+print(f"R² test    : {cv_results['test_r2'].mean():.4f} ± {cv_results['test_r2'].std():.4f}")
+
+# y_pred pour tous les échantillons via cross-validation
+y_pred_rf_cv = cross_val_predict(model_6, X_sample, y_sample, cv=5, n_jobs=-1)
+
+# Si tu veux vérifier le RMSE global à partir de y_pred_rf_cv
+rmse_rf_cv = np.sqrt(mean_squared_error(y_sample, y_pred_rf_cv))
+r2_rf_cv = r2_score(y_sample, y_pred_rf_cv)
+
+print(f"RMSE RF CV : {rmse_rf_cv:.3f}")
+print(f"R² RF CV   : {r2_rf_cv:.4f}")
+
+sample_size = len(X)
+np.random.seed(42)
+indices = np.random.choice(X.shape[0], size=sample_size, replace=False)
+
+X_sample = X.iloc[indices]
+y_sample = y.iloc[indices]
+
+# Scaling
+scaler = StandardScaler()
+X_sample_scaled = scaler.fit_transform(X_sample)
+
+# Train/test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X_sample_scaled, y_sample, test_size=0.2, random_state=42
+)
+
+# NN Model
+def create_nn_model(input_dim):
+    model = Sequential([
+        Dense(128, activation='relu', input_dim=input_dim),
+        Dense(64, activation='relu'),
+        Dense(128, activation='relu'),
+        Dense(1)  
+    ])
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+    return model
+
+model_9 = create_nn_model(X_train.shape[1])
+
+# Learning
+history = model_9.fit(
+    X_train, y_train,
+    validation_data=(X_test, y_test),
+    epochs=50,
+    batch_size=32,
+    verbose=1
+)
+
+model_9.features_ = X_sample.columns.tolist()  
+
+# Predictions and metrics
+y_pred_nn = model_9.predict(X_test).flatten()
+rmse_nn = np.sqrt(mean_squared_error(y_test, y_pred_nn))
+r2_nn = r2_score(y_test, y_pred_nn)
+
+print("Neural Network")
+print(f"RMSE : {rmse_nn:.3f}")
+print(f"R²   : {r2_nn:.4f}")
+
+
+# Definition of the enhanced network
+def create_improved_nn(input_dim):
+    model = Sequential([
+        Dense(128, activation='relu', input_dim=input_dim,
+              kernel_regularizer=regularizers.l2(0.001)),
+        BatchNormalization(),
+        Dropout(0.2),
+        Dense(64, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        BatchNormalization(),
+        Dropout(0.2),
+        Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        Dense(1)  
+    ])
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+    return model
+
+model_10 = create_improved_nn(X_train.shape[1])
+
+# Callbacks
+reduce_lr = ReduceLROnPlateau(
+    monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6, verbose=1
+)
+early_stop = EarlyStopping(
+    monitor='val_loss', patience=10, restore_best_weights=True, verbose=1
+)
+
+# Learning
+history = model_10.fit(
+    X_train, y_train,
+    validation_data=(X_test, y_test),
+    epochs=100,
+    batch_size=32,
+    callbacks=[reduce_lr, early_stop],
+    verbose=1
+)
+
+model_10.features_ = X_sample.columns.tolist()  
+
+# Predictions and metrics
+y_pred_nn2 = model_10.predict(X_test).flatten()
+rmse_nn2 = np.sqrt(mean_squared_error(y_test, y_pred_nn2))
+r2_nn2 = r2_score(y_test, y_pred_nn2)
+
+print("Enhanced Neural Network")
+print(f"RMSE : {rmse_nn2:.3f}")
+print(f"R²   : {r2_nn2:.4f}")
+
+# Learning curves and loss function
+plt.figure(figsize=(8,5))
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('MSE Loss')
+plt.title('Learning curve')
+plt.legend()
+plt.show()
+
+# Advanced Deep Neural Networks
+def create_optimized_nn(input_dim):
+    model = Sequential([
+        Dense(256, activation='relu', input_dim=input_dim,
+              kernel_regularizer=regularizers.l2(0.001)),
+        BatchNormalization(),
+        Dropout(0.2),
+        Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        BatchNormalization(),
+        Dropout(0.2),
+        Dense(64, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        BatchNormalization(),
+        Dropout(0.2),
+        Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        BatchNormalization(),
+        Dropout(0.2),
+        Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        Dense(1)
+    ])
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+    return model
+
+model_11 = create_optimized_nn(X_train.shape[1])
+
+# Callbacks
+reduce_lr = ReduceLROnPlateau(
+    monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6, verbose=1
+)
+early_stop = EarlyStopping(
+    monitor='val_loss', patience=10, restore_best_weights=True, verbose=1
+)
+
+# Learning
+history = model_11.fit(
+    X_train, y_train,
+    validation_data=(X_test, y_test),
+    epochs=100,
+    batch_size=64,
+    callbacks=[reduce_lr, early_stop],
+    verbose=1
+)
+
+model_11.features_ = X_sample.columns.tolist()  
+
+# Predictions and metrics
+y_pred_nn3 = model_11.predict(X_test).flatten()
+rmse_nn3 = np.sqrt(mean_squared_error(y_test, y_pred_nn3))
+r2_nn3 = r2_score(y_test, y_pred_nn3)
+
+print("Enhanced Deep Neural Network")
+print(f"RMSE : {rmse_nn3:.3f}")
+print(f"R²   : {r2_nn3:.4f}")
+
+# Learning curves and loss function
+plt.figure(figsize=(8,5))
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('MSE Loss')
+plt.title('Learning curve')
+plt.legend()
+plt.show()
+
+
+models_dict = {
+    'Model 1: Linear regression all vars': model_1,
+    'Model 2: Linear regression explanatory vars': model_2,
+    'Model 3: Linear regression feature engineering': model_3,
+    'Model 4: Linear regression by cluster': model_4,
+    'Model 5: Ridge and Lasso': model_5,
+    'Model 6: Random Forest': model_6,
+    'Model 7: Gradient Boosting': model_7,
+    'Model 9: Neural Networks': model_9,
+    'Model 10: Advanced Neural Networks': model_10,
+    'Model 11: Advanced Deep Neural Networks': model_11
+}
+
+rmse_dict = {
+    'Model 1: Linear regression all vars': rmse_mod1,
+    'Model 2: Linear regression explanatory vars': rmse_mod2,
+    'Model 3: Linear regression feature engineering': rmse_mod3,
+    'Model 4: Linear regression by cluster': rmse_mod4,
+    'Model 5: Ridge and Lasso': min(rmse_global_ridge, rmse_global_lasso),
+    'Model 6: Random Forest': rmse_rf,
+    'Model 7: Gradient Boosting': rmse_gb,
+    'Model 9: Neural Networks': rmse_nn,
+    'Model 10: Advanced Neural Networks': rmse_nn2,
+    'Model 11: Advanced Deep Neural Networks': rmse_nn3
+}
+
+df_rmse = pd.DataFrame.from_dict(rmse_dict, orient='index', columns=['RMSE'])
+df_rmse = df_rmse.sort_values('RMSE')
+
+print("=== Tableau récapitulatif des RMSE ===")
+print(df_rmse)
+
+best_model_name = df_rmse.index[0]
+best_model_rmse = df_rmse.iloc[0, 0]
+best_model = models_dict[best_model_name]
+
+print(f"\nMeilleur modèle : {best_model_name} | RMSE = {best_model_rmse:.3f}")
+
+y_bins = pd.qcut(y, q=10, duplicates="drop")
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y_bins
+)
+
+y_bins_train = pd.qcut(y_train, q=10, duplicates="drop")
+
+X_train_full, X_val, y_train_full, y_val = train_test_split(
+    X_train, y_train,
+    test_size=0.2,
+    random_state=42,
+    stratify=y_bins_train
+)
+
+print("Train full :", X_train_full.shape)
+print("Validation :", X_val.shape)
+print("Test       :", X_test.shape)
+
+gb_model = GradientBoostingRegressor(
+    n_estimators=800,          
+    learning_rate=0.03,
+    max_depth=3,               
+    min_samples_leaf=50,       
+    subsample=0.8,             
+    max_features=0.8,          
+    random_state=42
+)
+
+gb_model.fit(X_train_full, y_train_full)
+
+val_mse = []
+
+for y_val_pred in gb_model.staged_predict(X_val):
+    val_mse.append(mean_squared_error(y_val, y_val_pred))
+
+best_n_estimators = np.argmin(val_mse) + 1
+best_rmse_val = np.sqrt(val_mse[best_n_estimators - 1])
+
+print(f"Best n_estimators : {best_n_estimators}")
+print(f"Best val RMSE     : {best_rmse_val:.3f}")
+
+gb_final = GradientBoostingRegressor(
+    n_estimators=best_n_estimators,
+    learning_rate=0.03,
+    max_depth=3,
+    min_samples_leaf=50,
+    subsample=0.8,
+    max_features=0.8,
+    random_state=42
+)
+
+gb_final.fit(X_train, y_train)
+gb_final.features_ = X_sample.columns.tolist()
+
+y_pred_gb = gb_final.predict(X_test)
+
+rmse_gb = np.sqrt(mean_squared_error(y_test, y_pred_gb))
+r2_gb = r2_score(y_test, y_pred_gb)
+
+print("\nGradient Boosting (Advanced)")
+print(f"RMSE : {rmse_gb:.3f}")
+print(f"R²   : {r2_gb:.4f}")
+
+gb_importances = pd.Series(
+    gb_final.feature_importances_,
+    index=X_train.columns
+).sort_values(ascending=False)
+
+print("\nTop 15 feature importances:")
+print(gb_importances.head(15))
+
+plt.figure(figsize=(8, 5))
+plt.plot(np.sqrt(val_mse), label="Validation RMSE")
+plt.axvline(best_n_estimators, linestyle="--", label="Best n_estimators")
+plt.xlabel("Number of estimators")
+plt.ylabel("RMSE")
+plt.title("Gradient Boosting – Early stopping")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+X_fe = X.copy()
+
+# Non linear transformations
+for col in features:
+    if (X_fe[col] > 0).all():
+        X_fe[f"{col}_log"] = np.log1p(X_fe[col])
+        X_fe[f"{col}_sqrt"] = np.sqrt(X_fe[col])
+
+# Multiplicative interactions
+base_feats = features[:min(5, len(features))]
+
+for i in range(len(base_feats)):
+    for j in range(i + 1, len(base_feats)):
+        f1, f2 = base_feats[i], base_feats[j]
+        X_fe[f"{f1}_x_{f2}"] = X_fe[f1] * X_fe[f2]
+
+# Ratios
+for i in range(min(3, len(features))):
+    for j in range(i + 1, min(6, len(features))):
+        num, den = features[i], features[j]
+        X_fe[f"{num}_over_{den}"] = X_fe[num] / (X_fe[den] + 1e-6)
+
+# Relative normalization
+for col in features:
+    mean_val = X_fe[col].mean()
+    X_fe[f"{col}_minus_mean"] = X_fe[col] - mean_val
+    X_fe[f"{col}_over_mean"] = X_fe[col] / (mean_val + 1e-6)
+
+# Rank & quantiles 
+for col in features:
+    X_fe[f"{col}_rank"] = X_fe[col].rank(pct=True)
+    X_fe[f"{col}_qbin"] = pd.qcut(
+        X_fe[col],
+        q=10,
+        labels=False,
+        duplicates="drop"
+    )
+
+print(f"Features initiales : {len(features)}")
+print(f"Features après FE : {X_fe.shape[1]}")
+
+X = X_fe
+
+# Approximate stratification
+y_bins = pd.qcut(y, q=10, duplicates="drop")
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y_bins
+)
+
+y_bins_train = pd.qcut(y_train, q=10, duplicates="drop")
+
+X_train_full, X_val, y_train_full, y_val = train_test_split(
+    X_train, y_train,
+    test_size=0.2,
+    random_state=42,
+    stratify=y_bins_train
+)
+
+print("Train full :", X_train_full.shape)
+print("Validation :", X_val.shape)
+print("Test       :", X_test.shape)
+
+gb_model = GradientBoostingRegressor(
+    n_estimators=800,
+    learning_rate=0.03,
+    max_depth=3,
+    min_samples_leaf=50,
+    subsample=0.8,
+    max_features=0.8,
+    random_state=42
+)
+
+gb_model.fit(X_train_full, y_train_full)
+
+val_mse = []
+
+for y_val_pred in gb_model.staged_predict(X_val):
+    val_mse.append(mean_squared_error(y_val, y_val_pred))
+
+best_n_estimators = np.argmin(val_mse) + 1
+best_rmse_val = np.sqrt(val_mse[best_n_estimators - 1])
+
+print(f"Best n_estimators : {best_n_estimators}")
+print(f"Best val RMSE     : {best_rmse_val:.3f}")
+
+gb_final = GradientBoostingRegressor(
+    n_estimators=best_n_estimators,
+    learning_rate=0.03,
+    max_depth=3,
+    min_samples_leaf=50,
+    subsample=0.8,
+    max_features=0.8,
+    random_state=42
+)
+
+gb_final.fit(X_train, y_train)
+
+# Saving features
+gb_final.features_ = X_train.columns.tolist()
+
+y_pred_gb = gb_final.predict(X_test)
+
+rmse_gb = np.sqrt(mean_squared_error(y_test, y_pred_gb))
+r2_gb = r2_score(y_test, y_pred_gb)
+
+print("\nGradient Boosting (Full FE)")
+print(f"RMSE : {rmse_gb:.3f}")
+print(f"R²   : {r2_gb:.4f}")
+
+gb_importances = (
+    pd.Series(gb_final.feature_importances_, index=gb_final.features_)
+      .sort_values(ascending=False)
+)
+
+print("\nTop 20 feature importances:")
+print(gb_importances.head(20))
+
+plt.figure(figsize=(8, 5))
+plt.plot(np.sqrt(val_mse), label="Validation RMSE")
+plt.axvline(best_n_estimators, linestyle="--", label="Best n_estimators")
+plt.xlabel("Number of estimators")
+plt.ylabel("RMSE")
+plt.title("Gradient Boosting – Early stopping")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+from sklearn.ensemble import HistGradientBoostingRegressor
+
+hgb = HistGradientBoostingRegressor(
+    max_depth=3,
+    learning_rate=0.03,
+    max_iter=400,
+    min_samples_leaf=50,
+    l2_regularization=0.0,
+    random_state=42
+)
+
+hgb.fit(X_train_full, y_train_full)
+
+y_val_pred = hgb.predict(X_val)
+rmse_val = np.sqrt(mean_squared_error(y_val, y_val_pred))
+
+print("HistGradientBoosting")
+print(f"Validation RMSE : {rmse_val:.3f}")
+
+hgb.fit(X_train, y_train)
+
+y_test_pred = hgb.predict(X_test)
+
+rmse_test = np.sqrt(mean_squared_error(y_test, y_test_pred))
+r2_test = r2_score(y_test, y_test_pred)
+
+print(f"Test RMSE : {rmse_test:.3f}")
+print(f"Test R²   : {r2_test:.4f}")
+
+
+# Load test file
+test_df = pd.read_csv("C:\\Users\\alexl\\Downloads\\test.csv")
+
+# Feature engineering on test_df (same transformations as on train)
+X_test_fe = test_df[features].copy()
+
+for col in features:
+    if (X_test_fe[col] > 0).all():
+        X_test_fe[f"{col}_log"] = np.log1p(X_test_fe[col])
+        X_test_fe[f"{col}_sqrt"] = np.sqrt(X_test_fe[col])
+
+base_feats = features[:min(5, len(features))]
+for i in range(len(base_feats)):
+    for j in range(i + 1, len(base_feats)):
+        f1, f2 = base_feats[i], base_feats[j]
+        X_test_fe[f"{f1}_x_{f2}"] = X_test_fe[f1] * X_test_fe[f2]
+
+for i in range(min(3, len(features))):
+    for j in range(i + 1, min(6, len(features))):
+        num, den = features[i], features[j]
+        X_test_fe[f"{num}_over_{den}"] = X_test_fe[num] / (X_test_fe[den] + 1e-6)
+
+for col in features:
+    mean_val = X_train[col].mean()  # attention : toujours la moyenne du train
+    X_test_fe[f"{col}_minus_mean"] = X_test_fe[col] - mean_val
+    X_test_fe[f"{col}_over_mean"] = X_test_fe[col] / (mean_val + 1e-6)
+
+for col in features:
+    X_test_fe[f"{col}_rank"] = X_test_fe[col].rank(pct=True)
+    X_test_fe[f"{col}_qbin"] = pd.qcut(
+        X_test_fe[col],
+        q=10,
+        labels=False,
+        duplicates="drop"
+    )
+
+# Predictions
+test_df["y_pred_gb"] = gb_final.predict(X_test_fe)
+
+print(test_df[["y_pred_gb"]].head())
+
+
+submission = pd.DataFrame({
+    "ID": test_df.index,          
+    "BeatsPerMinute": test_df["y_pred_gb"].values
+})
+
+submission.to_csv("submission.csv", index=False)
+
+print("\nsubmission.csv generated with success")
+
+
